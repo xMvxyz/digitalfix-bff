@@ -1,0 +1,22 @@
+services:
+  bff:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - JWT_ISSUER_URI=https://login.microsoftonline.com/${AZURE_TENANT_ID}/v2.0
+      - JWT_AUDIENCE=api://digitalfix-bff
+      - WORKORDERS_URL=http://workorders:8081
+      - CATALOG_URL=http://catalog:8082
+      - CORS_ALLOWED_ORIGINS=http://localhost:4200
+    depends_on:
+      - workorders
+      - catalog
+  workorders:
+    image: digitalfix-workorders:latest
+    ports:
+      - "8081:8081"
+  catalog:
+    image: digitalfix-catalog:latest
+    ports:
+      - "8082:8082"
