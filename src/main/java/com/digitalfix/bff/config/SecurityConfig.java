@@ -1,27 +1,48 @@
 package com.digitalfix.bff.config;
 
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.convert.converter.Converter;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtDecoders;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import com.digitalfix.bff.security.JwtRoleConverter;
-
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
 public class SecurityConfig {
+
+    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
+    private String issuerUri;
+
+    @Value("${spring.security.oauth2.resourceserver.jwt.audiences}")
+    private String expectedAudience;
 
     @Value("${app.security-disabled:false}")
     private boolean securityDisabled;
@@ -47,17 +68,19 @@ public class SecurityConfig {
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 // Catalogo: el Cliente puede consultar; las mutaciones quedan para Admin/Supervisor.
-                .requestMatchers(HttpMethod.GET, "/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE", "Admin", "Supervisor", "Cliente")
-                .requestMatchers("/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "Admin", "Supervisor")
+                .requestMatchers(HttpMethod.GET, "/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE")
+                .requestMatchers("/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR")
                 // El caso permite al Cliente cambiar el estado de sus ordenes; el microservicio valida la transicion.
-                .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE", "Admin", "Supervisor", "Cliente")
-                .requestMatchers(HttpMethod.DELETE, "/api/workorders/**").hasAnyRole("ADMIN", "SUPERVISOR", "Admin", "Supervisor")
+                .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE")
+                .requestMatchers(HttpMethod.DELETE, "/api/workorders/**").hasAnyRole("ADMIN", "SUPERVISOR")
                 .requestMatchers("/api/workorders/**").authenticated()
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()
             )
             .oauth2ResourceServer(oauth -> oauth
-                .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
+                .jwt(jwt -> jwt
+                    .decoder(jwtDecoder())
+                    .jwtAuthenticationConverter(jwtAuthenticationConverter()))
             )
             .exceptionHandling(ex -> ex
                 .authenticationEntryPoint((req, res, e) -> {
@@ -75,8 +98,36 @@ public class SecurityConfig {
     }
 
     @Bean
-    public org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt, org.springframework.security.authentication.AbstractAuthenticationToken> jwtAuthenticationConverter() {
-        return new JwtRoleConverter();
+    public Converter<Jwt, Collection<GrantedAuthority>> jwtGrantedAuthoritiesConverter() {
+        return jwt -> {
+            List<String> roles = jwt.getClaimAsStringList("roles");
+            if (roles == null || roles.isEmpty()) {
+                return Collections.emptyList();
+            }
+            return roles.stream()
+                .map(role -> "ROLE_" + role.replaceFirst("(?i)^ROLE_", "").toUpperCase())
+                .map(SimpleGrantedAuthority::new)
+                .collect(Collectors.toList());
+        };
+    }
+
+    @Bean
+    public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(jwtGrantedAuthoritiesConverter());
+        return converter;
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "app.security-disabled", havingValue = "false", matchIfMissing = true)
+    public JwtDecoder jwtDecoder() {
+        NimbusJwtDecoder decoder = JwtDecoders.fromIssuerLocation(issuerUri);
+        OAuth2TokenValidator<Jwt> issuer = JwtValidators.createDefaultWithIssuer(issuerUri);
+        OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience().contains(expectedAudience)
+            ? OAuth2TokenValidatorResult.success()
+            : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Audience no valida", null));
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(issuer, audience));
+        return decoder;
     }
 
     @Bean
