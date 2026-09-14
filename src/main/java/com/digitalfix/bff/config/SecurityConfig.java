@@ -67,9 +67,9 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // Catalogo: el Cliente puede consultar; las mutaciones quedan para Admin/Supervisor.
+                // Catalogo: lectura para todos los roles; la gestión es exclusiva del Supervisor.
                 .requestMatchers(HttpMethod.GET, "/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE")
-                .requestMatchers("/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR")
+                .requestMatchers("/api/catalog/**").hasRole("SUPERVISOR")
                 // El caso permite al Cliente cambiar el estado de sus ordenes; el microservicio valida la transicion.
                 .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE")
                 .requestMatchers(HttpMethod.DELETE, "/api/workorders/**").hasAnyRole("ADMIN", "SUPERVISOR")
@@ -123,11 +123,23 @@ public class SecurityConfig {
     public JwtDecoder jwtDecoder() {
         NimbusJwtDecoder decoder = JwtDecoders.fromIssuerLocation(issuerUri);
         OAuth2TokenValidator<Jwt> issuer = JwtValidators.createDefaultWithIssuer(issuerUri);
-        OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience().contains(expectedAudience)
+        // Entra ID v1 emite aud "api://GUID" y v2 emite el GUID pelado: se normaliza antes de comparar.
+        OAuth2TokenValidator<Jwt> audience = jwt -> jwt.getAudience().stream()
+            .map(SecurityConfig::normalizeAudience)
+            .anyMatch(a -> a.equalsIgnoreCase(normalizeAudience(expectedAudience)))
             ? OAuth2TokenValidatorResult.success()
             : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "Audience no valida", null));
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(issuer, audience));
         return decoder;
+    }
+
+    private static String normalizeAudience(String aud) {
+        if (aud == null) return "";
+        String s = aud.trim();
+        if (s.regionMatches(true, 0, "api://", 0, 6)) s = s.substring(6);
+        int slash = s.indexOf('/');
+        if (slash > 0) s = s.substring(0, slash);
+        return s;
     }
 
     @Bean
@@ -136,9 +148,11 @@ public class SecurityConfig {
         List<String> origins = Arrays.stream(corsOrigins.split(",")).map(String::trim).toList();
         config.setAllowedOriginPatterns(origins);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
+        // Explicito para igualar API Gateway + allowCredentials=true (* falla en algunos navegadores/Spring)
+        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "X-User-Email", "X-User-Role"));
         config.setExposedHeaders(List.of("Authorization", "Content-Type"));
         config.setAllowCredentials(true);
+        config.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
         return source;

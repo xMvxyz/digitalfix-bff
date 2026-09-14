@@ -1,9 +1,14 @@
 server:
   port: 8080 # Puerto del BFF
 
+
+app:
+  catalog-url: ${CATALOG_URL:http://localhost:8081}
+  workorders-url: ${WORKORDERS_URL:http://localhost:8082}
+
 services:
-  catalog-url: http://localhost:8081/
-  workorders-url: http://localhost:8082/
+  catalog-url: ${CATALOG_URL:http://localhost:8081/}
+  workorders-url: ${WORKORDERS_URL:http://localhost:8082/}
 
 spring:
   security:
@@ -11,6 +16,6 @@ spring:
       resourceserver:
         jwt:
           # URL del tenant en Entra ID
-          issuer-uri: https://login.microsoftonline.com/$%7BTENANT_ID:tu-tenant-id%7D/v2.0
+          issuer-uri: https://login.microsoftonline.com/0c1f677f-ce2e-4fd2-8562-f5052fab4086/v2.0
           # Client ID o App ID URI registrado para la API en Entra ID
-          audiences: ${API_AUDIENCE:api://digitalfix-api}
+          audiences: ${API_AUDIENCE:api://2cd82242-bced-4d52-974a-09fbbf1a9e4d/access_as_user}

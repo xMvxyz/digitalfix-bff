@@ -153,10 +153,13 @@ public class CatalogBffController {
 
     private String resolveRole(Authentication auth) {
         if (auth == null) return "ANONYMOUS";
+        // El Authentication puede traer authorities SCOPE_* además de ROLE_*:
+        // se busca explícitamente el rol, no la primera authority.
         return auth.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
-                .map(a -> a.startsWith("ROLE_") ? a.substring(5) : a)
+                .filter(a -> a.startsWith("ROLE_"))
+                .map(a -> a.substring("ROLE_".length()))
                 .findFirst()
-                .orElse("Cliente");
+                .orElse("ANONYMOUS");
     }
 }

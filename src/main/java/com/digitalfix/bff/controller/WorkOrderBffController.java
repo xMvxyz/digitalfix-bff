@@ -21,7 +21,11 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import lombok.RequiredArgsConstructor;
 
@@ -31,10 +35,14 @@ import lombok.RequiredArgsConstructor;
 public class WorkOrderBffController {
 
     private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     // Asegurate de que este puerto coincida con tu microservicio de ordenes (ej: 8082)
     @Value("${app.workorders-url:http://localhost:8082}")
     private String baseUrl;
+
+    @Value("${app.catalog-url:http://localhost:8081}")
+    private String catalogBaseUrl;
 
     @GetMapping
     public ResponseEntity<String> list(@RequestHeader HttpHeaders headers, Authentication auth) {
@@ -53,7 +61,28 @@ public class WorkOrderBffController {
 
     @PatchMapping("/{id}/status")
     public ResponseEntity<String> changeStatus(@PathVariable String id, @RequestHeader HttpHeaders headers, @RequestBody(required = false) String body, Authentication auth) {
-        return exchange(baseUrl + "/api/workorders/" + id + "/status", HttpMethod.PATCH, headers, body, auth);
+        ResponseEntity<String> response = exchange(baseUrl + "/api/workorders/" + id + "/status", HttpMethod.PATCH, headers, body, auth);
+        // Regla clave: el stock del repuesto disminuye al asignar la orden
+        if (response.getStatusCode().is2xxSuccessful() && isAsignada(body)) {
+            Long repuestoId = extractRepuestoId(response.getBody());
+            if (repuestoId != null) {
+                try {
+                    restTemplate.exchange(catalogBaseUrl + "/api/catalog/repuestos/" + repuestoId + "/consumir",
+                            HttpMethod.POST, new HttpEntity<>(null, forwardHeaders(headers, auth)), String.class);
+                } catch (HttpStatusCodeException ex) {
+                    return ResponseEntity
+                            .status(org.springframework.http.HttpStatus.CONFLICT)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(ex.getResponseBodyAsString());
+                } catch (RestClientException ex) {
+                    return ResponseEntity
+                            .status(org.springframework.http.HttpStatus.BAD_GATEWAY)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body("{\"status\":502,\"error\":\"Bad Gateway\",\"message\":\"No se pudo descontar stock: " + ex.getMessage() + "\"}");
+                }
+            }
+        }
+        return response;
     }
 
     @DeleteMapping("/{id}")
@@ -62,6 +91,18 @@ public class WorkOrderBffController {
     }
 
     private ResponseEntity<String> exchange(String url, HttpMethod method, HttpHeaders incomingHeaders, String body, Authentication auth) {
+        try {
+            return restTemplate.exchange(url, method, new HttpEntity<>(body, forwardHeaders(incomingHeaders, auth)), String.class);
+        } catch (HttpStatusCodeException ex) {
+            // Si el microservicio devuelve 400, 404, 409, etc., reenviamos el JSON de error exacto
+            return ResponseEntity
+                    .status(ex.getStatusCode())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(ex.getResponseBodyAsString());
+        }
+    }
+
+    private HttpHeaders forwardHeaders(HttpHeaders incomingHeaders, Authentication auth) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(List.of(MediaType.APPLICATION_JSON));
@@ -75,15 +116,25 @@ public class WorkOrderBffController {
         // Propagar identidad y rol extraidos de forma segura desde el JWT
         headers.set("X-User-Email", resolveEmail(auth));
         headers.set("X-User-Role", resolveRole(auth));
+        return headers;
+    }
 
+    private boolean isAsignada(String body) {
         try {
-            return restTemplate.exchange(url, method, new HttpEntity<>(body, headers), String.class);
-        } catch (HttpStatusCodeException ex) {
-            // Si el microservicio devuelve 400, 404, 409, etc., reenviamos el JSON de error exacto
-            return ResponseEntity
-                    .status(ex.getStatusCode())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(ex.getResponseBodyAsString());
+            JsonNode node = objectMapper.readTree(body);
+            return node.path("estado").asText("").equalsIgnoreCase("ASIGNADA");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Long extractRepuestoId(String responseBody) {
+        try {
+            JsonNode node = objectMapper.readTree(responseBody);
+            JsonNode id = node.path("repuestoId");
+            return (id.isNumber()) ? id.asLong() : null;
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -100,10 +151,13 @@ public class WorkOrderBffController {
 
     private String resolveRole(Authentication auth) {
         if (auth == null) return "ANONYMOUS";
+        // El Authentication puede traer authorities SCOPE_* además de ROLE_*:
+        // se busca explícitamente el rol, no la primera authority.
         return auth.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
-                .map(a -> a.startsWith("ROLE_") ? a.substring(5) : a)
+                .filter(a -> a.startsWith("ROLE_"))
+                .map(a -> a.substring("ROLE_".length()))
                 .findFirst()
-                .orElse("Cliente");
+                .orElse("ANONYMOUS");
     }
 }
