@@ -67,11 +67,11 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // Catalogo: lectura para todos los roles; la gestión es exclusiva del Supervisor.
+                // Catalogo: lectura todos; gestion Admin+Supervisor (guia: Admin administra servicios y repuestos).
                 .requestMatchers(HttpMethod.GET, "/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE")
-                .requestMatchers("/api/catalog/**").hasRole("SUPERVISOR")
-                // El caso permite al Cliente cambiar el estado de sus ordenes; el microservicio valida la transicion.
-                .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE")
+                .requestMatchers("/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR")
+                // Solo Supervisor/Admin cambian estado (Cliente crea y sigue). Prueba 403 sin permiso.
+                .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR")
                 .requestMatchers(HttpMethod.DELETE, "/api/workorders/**").hasAnyRole("ADMIN", "SUPERVISOR")
                 .requestMatchers("/api/workorders/**").authenticated()
                 .requestMatchers("/api/**").authenticated()

@@ -61,10 +61,21 @@ public class WorkOrderBffController {
 
     @PatchMapping("/{id}/status")
     public ResponseEntity<String> changeStatus(@PathVariable String id, @RequestHeader HttpHeaders headers, @RequestBody(required = false) String body, Authentication auth) {
+        // Pre-check stock antes de ASIGNAR para no dejar orden inconsistente
+        Long preRepuestoId = null;
+        if (isAsignada(body)) {
+            preRepuestoId = fetchRepuestoId(id, headers, auth);
+            if (preRepuestoId != null && !hasStock(preRepuestoId, headers, auth)) {
+                return ResponseEntity.status(org.springframework.http.HttpStatus.CONFLICT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"status\":409,\"error\":\"Conflict\",\"message\":\"Stock insuficiente para repuesto " + preRepuestoId + ", no se asigna la orden\"}");
+            }
+        }
         ResponseEntity<String> response = exchange(baseUrl + "/api/workorders/" + id + "/status", HttpMethod.PATCH, headers, body, auth);
         // Regla clave: el stock del repuesto disminuye al asignar la orden
         if (response.getStatusCode().is2xxSuccessful() && isAsignada(body)) {
             Long repuestoId = extractRepuestoId(response.getBody());
+            if (repuestoId == null) repuestoId = preRepuestoId;
             if (repuestoId != null) {
                 try {
                     restTemplate.exchange(catalogBaseUrl + "/api/catalog/repuestos/" + repuestoId + "/consumir",
@@ -78,11 +89,32 @@ public class WorkOrderBffController {
                     return ResponseEntity
                             .status(org.springframework.http.HttpStatus.BAD_GATEWAY)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .body("{\"status\":502,\"error\":\"Bad Gateway\",\"message\":\"No se pudo descontar stock: " + ex.getMessage() + "\"}");
+                            .body("{\"status\":502,\"error\":\"Bad Gateway\",\"message\":\"Orden asignada pero no se pudo descontar stock: " + ex.getMessage() + "\"}");
                 }
             }
         }
         return response;
+    }
+
+    private Long fetchRepuestoId(String id, HttpHeaders headers, Authentication auth) {
+        try {
+            ResponseEntity<String> r = restTemplate.exchange(baseUrl + "/api/workorders/" + id,
+                    HttpMethod.GET, new HttpEntity<>(null, forwardHeaders(headers, auth)), String.class);
+            return extractRepuestoId(r.getBody());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean hasStock(Long repuestoId, HttpHeaders headers, Authentication auth) {
+        try {
+            ResponseEntity<String> r = restTemplate.exchange(catalogBaseUrl + "/api/catalog/repuestos/" + repuestoId,
+                    HttpMethod.GET, new HttpEntity<>(null, forwardHeaders(headers, auth)), String.class);
+            JsonNode n = objectMapper.readTree(r.getBody());
+            return n.path("stock").asInt(1) > 0;
+        } catch (Exception e) {
+            return true;
+        }
     }
 
     @DeleteMapping("/{id}")
