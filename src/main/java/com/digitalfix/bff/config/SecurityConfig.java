@@ -1,6 +1,8 @@
 package com.digitalfix.bff.config;
 
-import com.digitalfix.bff.security.JwtRoleConverter;
+import java.util.Arrays;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -14,8 +16,7 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import java.util.Arrays;
-import java.util.List;
+import com.digitalfix.bff.security.JwtRoleConverter;
 
 @Configuration
 @EnableWebSecurity
@@ -45,10 +46,11 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // Catalog solo Admin/Supervisor
+                // Catalogo: el Cliente puede consultar; las mutaciones quedan para Admin/Supervisor.
+                .requestMatchers(HttpMethod.GET, "/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE", "Admin", "Supervisor", "Cliente")
                 .requestMatchers("/api/catalog/**").hasAnyRole("ADMIN", "SUPERVISOR", "Admin", "Supervisor")
-                // Workorders: crear/listar requiere autenticación; cambio de estado requiere rol privilegiado (se valida también a nivel BFF)
-                .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR", "Admin", "Supervisor")
+                // El caso permite al Cliente cambiar el estado de sus ordenes; el microservicio valida la transicion.
+                .requestMatchers(HttpMethod.PATCH, "/api/workorders/*/status").hasAnyRole("ADMIN", "SUPERVISOR", "CLIENTE", "Admin", "Supervisor", "Cliente")
                 .requestMatchers(HttpMethod.DELETE, "/api/workorders/**").hasAnyRole("ADMIN", "SUPERVISOR", "Admin", "Supervisor")
                 .requestMatchers("/api/workorders/**").authenticated()
                 .requestMatchers("/api/**").authenticated()
